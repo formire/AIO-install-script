@@ -11,11 +11,11 @@ The project is designed to be modular, allowing users to choose which components
 
 | Component | Status |
 |---|---|
-| Windows 10 VM (`win10`) | Hardware testing completed; automation pending |
-| macOS VM (`macos`) | Reims-vGPU tested; automation pending |
-| Android (`droid`) | Planned |
-| Desktop Environment | Planned |
-| Disk Partitioning | Currently testing |
+| Windows 10 VM (`redstone.sh`) | Hardware testing completed; automation pending |
+| macOS VM (`pearl.sh`) | Reims-vGPU tested; automation pending |
+| Android (`aluminium.sh`) | Planned |
+| Desktop Environment (`varies by DE`) | Planned |
+| Disk Partitioning (`prism.sh`)| Currently testing |
 
 ## Supported Hardware
 
@@ -41,6 +41,9 @@ The following systems have been used to test the virtualization configurations. 
   - Dual-GPU Windows 10 VM using QEMU/KVM and Looking Glass.
   - Windows 10 installed on a separate physical disk and passed through to the VM.
   - Reims-vGPU without physical GPU passthrough (GTX 1050Ti).
+> [!NOTE]
+> I am currently testing this script to also work for ARM64 architecture
+> Test devices are Raspberry Pi 4 and M1 MacBook Pro
 
 ### Hardware Compatibility
 
@@ -58,7 +61,7 @@ Hardware detection and automatic configuration are planned features. The systems
 
 **Current installation status:** The automated installer is under development. The following is the intended installation workflow and is not yet a guaranteed working procedure.
 
-1. Clone the repository:
+1. Clone repo:
 
    ```bash
    git clone https://github.com/formire/AIO-install-script.git
@@ -70,7 +73,7 @@ Hardware detection and automatic configuration are planned features. The systems
    cd AIO-install-script
    ```
 
-3. Mark the script executable:
+3. Mark as executable:
 
    ```bash
    chmod +x setup.sh
@@ -91,18 +94,22 @@ The intended goal is to provide an interactive menu that allows users to select 
 Planned menu structure:
 
 ```text
-Select from list
-(* = sub-menu)
-Desktop Env. Setup
-Disk setup
-Win10 VM*
-macOS VM*
-Android Apps
-Exit
-Choose an option:
+main_menu() {
+    while true; do
+        printf '\n%s\n' "Formire's AIO Installer"
+        printf '  %s Desktop environment setup\n' "$(color_blue '1)')"
+        printf '  %s Disk setup\n' "$(color_blue '2)')"
+        printf '  %s Windows 10 VM (Looking Glass)\n' "$(color_blue '3)')"
+        printf '  %s macOS VM (Reims-vGPU)\n' "$(color_blue '4)')"
+        printf '  %s Android apps / OS\n' "$(color_blue '5)')"
+        printf '  %s Other features\n' "$(color_blue '6)')"
+        printf '  %s Show detected system information\n' "$(color_blue '7)')"
+        printf '  %s Refresh cached system information\n' "$(color_blue '8)')"
+        printf '  %s Exit\n' "$(color_blue '0)')"
+        read -rp "Choose an option: " choice
 ```
 > [!NOTE]
-> This is not the final menu implementation
+> snippet from `setup.sh` script
 
 Each component will have its own configuration options.
 
@@ -114,16 +121,17 @@ The macOS and Android configurations will follow a similar modular approach wher
 
 ---
 
-## To-Do
-
-### 1. Windows 10 VM (`win10`)
+### 1. Windows 10 VM (`redstone.sh`)
 
 **Completed Testing**
 - [x] Test dual-GPU Windows 10 VM with Looking Glass on ASUS Q538EI.
 - [x] Test dual-GPU Windows 10 VM with Looking Glass on Mac Pro 5,1.
 - [x] Test physical disk passthrough using a separate Windows 10 installation on Mac Pro 5,1.
-
-**Implementation**
+**Testing**
+- [ ] ARM64 Architecture
+  - [ ] Raspberry Pi 4
+  - [ ] M1 MacBook Pro
+**To-do**
 - [ ] Implement automated GPU detection.
 - [ ] Automate Looking Glass installation and configuration.
 - [ ] Add storage configuration options:
@@ -133,15 +141,20 @@ The macOS and Android configurations will follow a similar modular approach wher
 - [ ] Create two VM configurations:
   - [ ] GPU passthrough.
   - [ ] No GPU passthrough (virtual GPU).
+- [ ] Install BIOS files (if GPU needs it)
+- [ ] Add "fake battery" for laptop dGPU (Q538EI)
 
-### 2. macOS VM (`macos`)
+### 2. macOS VM (`pearl.sh`)
 
 **Completed Testing**
 - [x] Test Reims-vGPU on ASUS Q538EI.
 - [x] Test Reims-vGPU on Mac Pro 5,1.
 - [x] Test both configurations without physical GPU passthrough.
-
-**Implementation**
+**Testing**
+- [ ] ARM64 Architecture
+  - [ ] Raspberry Pi 4
+  - [ ] M1 MacBook Pro
+**To-do**
 - [ ] Automate Reims-vGPU installation and configuration.
 - [ ] Add storage configuration options:
   - [ ] Virtual disk image.
@@ -151,30 +164,32 @@ The macOS and Android configurations will follow a similar modular approach wher
   - [ ] GPU passthrough.
   - [ ] No GPU passthrough (Reims-vGPU).
 
-### 3. Android (`droid`)
+### 3. Android (`aluminium.sh`)
 
 **Testing**
-- [ ] Test Waydroid.
+- [x] Test Waydroid.
 - [ ] Test Brunch.
 
-**Implementation**
+**To-do**
 - [ ] Add installation menu to choose between Waydroid and Brunch.
 - [ ] Implement Brunch VM support.
 - [ ] Investigate GPU acceleration and passthrough compatibility.
-- [ ] Create separate configurations for:
-  - [ ] GPU passthrough.
-  - [ ] No GPU passthrough.
+  - [ ] Create separate configurations for:
+    - [ ] GPU passthrough.
+    - [ ] No GPU passthrough.
 
 ### 4. Desktop Environment
 
-**Implementation**
+**To-do**
 - [ ] Add installation options for common Linux desktop environments.
 - [ ] Add support for importing existing dotfiles.
 - [ ] Include configurations for:
+  - [ ] i3.
   - [ ] Sway.
   - [ ] Hyprland.
+    - [ ] Include option to configure Dusky (Arch only)
 
-### 5. Disk Partitioning
+### 5. Disk Partitioning (`prism.sh`)
 
 **Currently Testing**
 - [ ] Test automatic splitting of an existing installation partition (commonly `sda2`) into 2, 3, or 4 partitions for dual-boot and multiboot configurations.
@@ -183,23 +198,19 @@ The macOS and Android configurations will follow a similar modular approach wher
 - [x] Detect mounted ext4 system partitions.
 - [x] Halt execution when a mounted ext4 system partition is detected.
 
-**Implementation**
-- [ ] Detect unmounted ext4 system partitions.
+**To-do**
+- [In progress] Detect unmounted ext4 system partitions.
 - [ ] Allow operations on unmounted partitions when safe.
 - [ ] Verify that the target disk is not the disk currently running the script (e.g., a Live USB).
 - [ ] Add safeguards against accidental modification or formatting of existing installations.
 
 ---
 
-## Status Legend
-
 | Status | Meaning |
 |---|---|
 | [x] | Tested / Completed |
 | [ ] | Planned / Not yet implemented |
 | In Progress | Currently being developed or tested |
-
-## Notes
 
 - Testing a feature on physical hardware does not necessarily mean its installation and configuration have been automated.
 - GPU passthrough and virtual GPU configurations are treated as separate VM implementations.
