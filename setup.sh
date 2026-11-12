@@ -1,0 +1,322 @@
+#!/bin/bash
+# Formire's AIO Linux Installer
+#
+# Layout: (planned)
+#   setup.sh
+#   scripts/
+#     desktop/xfce.sh
+#     desktop/mate.sh
+#     desktop/plasma.sh
+#     desktop/gnome.sh
+#     desktop/i3.sh
+#     desktop/sway.sh
+#     desktop/hyprland.sh
+#     prism.sh (disk partitioning script)
+#     redstone.sh (win10 VM)
+#     pearl.sh - (macos VM)
+#     aluminium.sh
+#     other.sh
+#
+# Every sub-script receives SYSTEM_INFO_FILE and can read from it:
+#   source "$SYSTEM_INFO_FILE"
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+CACHE_DIR="/var/cache/aio-installer"
+SYSTEM_INFO_FILE="$CACHE_DIR/system-info.sh"
+CACHE_VERSION=1
+
+export SCRIPT_DIR SCRIPTS_DIR SYSTEM_INFO_FILE
+
+# Colors
+GREEN=$'\e[32m'
+BLUE=$'\e[34m'
+RED=$'\e[31m'
+RESET=$'\e[0m'
+
+color_blue() { printf '%s%s%s' "$BLUE" "$1" "$RESET"; }
+color_red() { printf '%s%s%s' "$RED" "$1" "$RESET"; }
+color_green() { printf '%s%s%s' "$GREEN" "$1" "$RESET"; }
+
+root_check() {
+    if (( EUID != 0 )); then
+        printf '%s\n' "Error: run this installer with sudo or as root." >&2
+        exit 1
+    fi
+}
+
+# Read the cached information if it is valid. Otherwise, detect it once and
+# write a sourceable Bash file that the installer and child scripts can reuse.
+detect_system_info() {
+    local os_name os_id os_like os_version chassis gpu_line
+    local -a detected_gpus=()
+
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        os_name="${PRETTY_NAME:-${NAME:-Unknown Linux}}"
+        os_id="${ID:-unknown}"
+        os_like="${ID_LIKE:-}"
+        os_version="${VERSION_ID:-unknown}"
+    else
+        os_name="Unknown Linux"
+        os_id="unknown"
+        os_like=""
+        os_version="unknown"
+    fi
+
+    os_id="${os_id,,}"
+    os_like="${os_like,,}"
+    SYSTEM_ARCH="$(uname -m)"
+
+    chassis=""
+    if command -v hostnamectl >/dev/null 2>&1; then
+        chassis="$(hostnamectl chassis 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$chassis" || "$chassis" == "none" ]]; then
+        # DMI chassis type: 3/4/5/6/7 are desktops; 8- (() etc.) are portable.
+        local dmi_type=""
+        [[ -r /sys/class/dmi/id/chassis_type ]] &&
+            dmi_type="$(< /sys/class/dmi/id/chassis_type)"
+
+        case "$dmi_type" in
+            3|4|5|6|7) chassis="desktop" ;;
+            8|9|10|11|12|14) chassis="laptop" ;;
+            17) chassis="server" ;;
+            *) chassis="unknown" ;;
+        esac
+    fi
+    chassis="${chassis,,}"
+
+    if [[ "$chassis" == *"vm"* || "$chassis" == *"virtual"* ]]; then
+        SYSTEM_DEVICE_TYPE="vm"
+    elif [[ "$chassis" == *"laptop"* || "$chassis" == *"notebook"* ]]; then
+        SYSTEM_DEVICE_TYPE="laptop"
+    elif [[ "$chassis" == *"desktop"* ]]; then
+        SYSTEM_DEVICE_TYPE="desktop"
+    elif [[ "$chassis" == *"server"* ]]; then
+        SYSTEM_DEVICE_TYPE="server"
+    else
+        SYSTEM_DEVICE_TYPE="$chassis"
+    fi
+
+    # lspci provides the most readable GPU names and lists multiple GPUs.
+    if command -v lspci >/dev/null 2>&1; then
+        while IFS= read -r gpu_line; do
+            [[ -n "$gpu_line" ]] && detected_gpus+=("$gpu_line")
+        done < <(
+            lspci -nn 2>/dev/null |
+                awk -F': ' '/VGA compatible controller|3D controller|Display controller/ {
+                    sub(/^[^:]+: /, "", $0)
+                    print
+                }'
+        )
+    fi
+
+    local gpu_count="${#detected_gpus[@]}"
+    if ((gpu_count == 0)); then
+        detected_gpus=("No GPU detected (install pciutils/lspci to improve detection)")
+    fi
+
+    # Select a package manager from the distro family, but verify that the
+    # executable is actually installed before accepting it.
+    SYSTEM_PKG_MANAGER="unknown"
+    case "$os_id $os_like" in
+        *debian*|*ubuntu*|*linuxmint*|*pop*)
+            command -v apt >/dev/null 2>&1 && SYSTEM_PKG_MANAGER="apt" ;;
+        *fedora*|*rhel*|*centos*|*rocky*|*almalinux*)
+            command -v dnf >/dev/null 2>&1 && SYSTEM_PKG_MANAGER="dnf" ;;
+        *arch*|*manjaro*)
+            command -v pacman >/dev/null 2>&1 && SYSTEM_PKG_MANAGER="pacman" ;;
+        *suse*|*opensuse*)
+            command -v zypper >/dev/null 2>&1 && SYSTEM_PKG_MANAGER="zypper" ;;
+    esac
+
+    # Fall back to whichever supported package manager is present.
+    if [[ "$SYSTEM_PKG_MANAGER" == "unknown" ]]; then
+        for candidate in apt dnf pacman zypper; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+                SYSTEM_PKG_MANAGER="$candidate"
+                break
+            fi
+        done
+    fi
+
+    SYSTEM_DISTRO="$os_name"
+    SYSTEM_DISTRO_ID="$os_id"
+    SYSTEM_DISTRO_LIKE="$os_like"
+    SYSTEM_DISTRO_VERSION="$os_version"
+    SYSTEM_DEVICE_CHASSIS="$chassis"
+    SYSTEM_GPU_COUNT="$gpu_count"
+    SYSTEM_GPUS=("${detected_gpus[@]}")
+
+    mkdir -p "$CACHE_DIR"
+    chmod 755 "$CACHE_DIR"
+
+    {
+        printf '# Generated by aio installer. Do not edit manually.\n'
+        printf 'SYSTEM_INFO_CACHE_VERSION=%q\n' "$CACHE_VERSION"
+        printf 'SYSTEM_DISTRO=%q\n' "$SYSTEM_DISTRO"
+        printf 'SYSTEM_DISTRO_ID=%q\n' "$SYSTEM_DISTRO_ID"
+        printf 'SYSTEM_DISTRO_LIKE=%q\n' "$SYSTEM_DISTRO_LIKE"
+        printf 'SYSTEM_DISTRO_VERSION=%q\n' "$SYSTEM_DISTRO_VERSION"
+        printf 'SYSTEM_ARCH=%q\n' "$SYSTEM_ARCH"
+        printf 'SYSTEM_DEVICE_TYPE=%q\n' "$SYSTEM_DEVICE_TYPE"
+        printf 'SYSTEM_DEVICE_CHASSIS=%q\n' "$SYSTEM_DEVICE_CHASSIS"
+        printf 'SYSTEM_PKG_MANAGER=%q\n' "$SYSTEM_PKG_MANAGER"
+        printf 'SYSTEM_GPU_COUNT=%q\n' "$SYSTEM_GPU_COUNT"
+        printf 'SYSTEM_GPUS=('
+        for gpu in "${SYSTEM_GPUS[@]}"; do
+            printf ' %q' "$gpu"
+        done
+        printf ' )\\n'
+    } > "$SYSTEM_INFO_FILE"
+
+    chmod 644 "$SYSTEM_INFO_FILE"
+}
+
+load_system_info() {
+    local refresh="${1:-false}"
+
+    if [[ "$refresh" == "true" || ! -s "$SYSTEM_INFO_FILE" ]]; then
+        printf '%s\n' "Detecting system information..."
+        detect_system_info
+    else
+        # The cache is a file generated by this script and is sourceable Bash.
+        source "$SYSTEM_INFO_FILE"
+
+        if [[ "${SYSTEM_INFO_CACHE_VERSION:-}" != "$CACHE_VERSION" ]]; then
+            printf '%s\n' "System information cache is outdated; refreshing..."
+            detect_system_info
+        else
+            printf '%s\n' "Loaded cached system information."
+        fi
+    fi
+
+    # Makes the variables available to sub-scripts.
+    export SYSTEM_DISTRO SYSTEM_DISTRO_ID SYSTEM_DISTRO_LIKE
+    export SYSTEM_DISTRO_VERSION SYSTEM_ARCH SYSTEM_DEVICE_TYPE
+    export SYSTEM_DEVICE_CHASSIS SYSTEM_PKG_MANAGER SYSTEM_GPU_COUNT
+    export SYSTEM_GPUS
+}
+
+show_system_info() {
+    printf '\n%s\n' "System information"
+    printf '  Distro:       %s (%s)\n' "$SYSTEM_DISTRO" "$SYSTEM_DISTRO_ID"
+    printf '  Version:      %s\n' "$SYSTEM_DISTRO_VERSION"
+    printf '  Architecture: %s\n' "$SYSTEM_ARCH"
+    printf '  Device:       %s\n' "$SYSTEM_DEVICE_TYPE"
+    printf '  Package mgr:  %s\n' "$SYSTEM_PKG_MANAGER"
+    printf '  GPUs (%s):\n' "$SYSTEM_GPU_COUNT"
+    printf '    - %s\n' "${SYSTEM_GPUS[@]}"
+    printf '  Cache:        %s\n\n' "$SYSTEM_INFO_FILE"
+}
+
+# sub-script function for a one package-install interface.
+install_packages() {
+    if (($# == 0)); then
+        printf '%s\n' "Usage: install_packages package [package ...]" >&2
+        return 2
+    fi
+
+    case "$SYSTEM_PKG_MANAGER" in
+        apt)    apt install -y "$@" ;;
+        dnf)    dnf install -y "$@" ;;
+        pacman) pacman -S --needed --noconfirm "$@" ;;
+        zypper) zypper install -y "$@" ;;
+        *)
+            printf 'Unsupported or undetected package manager: %s\n' \
+                "$SYSTEM_PKG_MANAGER" >&2
+            return 1
+            ;;
+    esac
+}
+
+run_script() {
+    local relative_path="$1"
+    local script_path="$SCRIPTS_DIR/$relative_path"
+
+    if [[ ! -f "$script_path" ]]; then
+        printf '%s\n' "Script not found: $script_path" >&2
+        printf '%s\n' "Create that file to enable this menu option."
+        read -rp "Press Enter to continue." _
+        return 1
+    fi
+
+    printf '\nRunning: %s\n\n' "$relative_path"
+    # sub-scripts can source "$SYSTEM_INFO_FILE" to access the detected system info.
+    local status=0
+    if bash "$script_path"; then
+        status=0
+    else
+        status=$?
+    fi
+
+    printf '\nScript finished with exit code %s.\n' "$status"
+    read -rp "Press Enter to return to the menu." _
+    return "$status"
+}
+
+desktop_menu() {
+    while true; do
+        printf '\n%s\n' "Desktop environment setup"
+        printf '  %s XFCE (full)\n' "$(color_blue '1)')"
+        printf '  %s MATE (full)\n' "$(color_blue '2)')"
+        printf '  %s Plasma (full)\n' "$(color_blue '3)')"
+        printf '  %s GNOME (full)\n' "$(color_blue '4)')"
+        printf '  %s Sway (dotfiles)\n' "$(color_blue '5)')"
+        printf '  %s Hyprland (dotfiles+)\n' "$(color_blue '6)')"
+        printf '  %s Back\n' "$(color_blue '0)')"
+        read -rp "Choose an option: " choice
+
+        case "$choice" in
+            1) run_script "desktop/xfce.sh" ;;
+            2) run_script "desktop/mate.sh" ;;
+            3) run_script "desktop/plasma.sh" ;;
+            4) run_script "desktop/gnome.sh" ;;
+            5) run_script "desktop/i3.sh" ;;
+            6) run_script "desktop/sway.sh" ;;
+            7) run_script "desktop/hyprland.sh" ;;
+            0) return ;;
+            *) printf '%s\n' "${RED}Unknown option.${RESET}" ;;
+        esac
+    done
+}
+
+main_menu() {
+    while true; do
+        printf '\n%s\n' "Formire's AIO Installer"
+        printf '  %s Desktop environment setup\n' "$(color_blue '1)')"
+        printf '  %s Disk setup\n' "$(color_blue '2)')"
+        printf '  %s Windows 10 VM (Looking Glass)\n' "$(color_blue '3)')"
+        printf '  %s macOS VM (Reims-vGPU)\n' "$(color_blue '4)')"
+        printf '  %s Android apps / OS\n' "$(color_blue '5)')"
+        printf '  %s Other features\n' "$(color_blue '6)')"
+        printf '  %s Show detected system information\n' "$(color_blue '7)')"
+        printf '  %s Refresh cached system information\n' "$(color_blue '8)')"
+        printf '  %s Exit\n' "$(color_blue '0)')"
+        read -rp "Choose an option: " choice
+
+        case "$choice" in
+            1) desktop_menu ;;
+            2) run_script "prism.sh" ;;
+            3) run_script "redstone.sh" ;;
+            4) run_script "pearl.sh" ;;
+            5) run_script "aluminium.sh" ;;
+            6) run_script "other.sh" ;;
+            7) show_system_info; read -rp "Press Enter to continue." _ ;;
+            8) load_system_info true; show_system_info
+               read -rp "Press Enter to continue." _ ;;
+            0) printf '%s\n' "Installation aborted."; exit 0 ;;
+            *) printf '%s\n' "${RED}Unknown option.${RESET}" ;;
+        esac
+    done
+}
+
+root_check
+load_system_info
+show_system_info
+main_menu
